@@ -1,45 +1,36 @@
 
-plugins {
-    id 'fabric-loom' version '1.9-SNAPSHOT'
-    id 'maven-publish'
-}
+name: Build EzVisuals-9
 
-version = project.mod_version
-group = project.maven_group
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
-base {
-    archivesName = project.archives_base_name
-}
+jobs:
+  build:
+    runs-on: ubuntu-latest
 
-repositories {
-    mavenCentral()
-}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-dependencies {
-    minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
-    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-}
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
 
-processResources {
-    inputs.property 'version', project.version
-    filesMatching('fabric.mod.json') {
-        expand 'version': project.version
-    }
-}
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
 
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
-    }
-    withSourcesJar()
-}
+      - name: Build mod
+        run: gradle build
 
-jar {
-    from('LICENSE') {
-        rename {
-            "${it}_${project.archives_base_name}"
-        }
-    }
-}
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: EzVisuals-9
+          path: build/libs/*.jar
+          if-no-files-found: error
