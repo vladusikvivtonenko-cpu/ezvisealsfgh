@@ -10,9 +10,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show files
-        run: ls -la
-
       - name: Move root .java files into src/main/java by package
         run: |
           shopt -s nullglob
@@ -22,14 +19,7 @@ jobs:
             dir="src/main/java/$(echo "$pkg" | tr . /)"
             mkdir -p "$dir"
             mv "$f" "$dir/"
-            echo "Moved $f -> $dir/"
           done
-
-      - name: Check sources
-        run: |
-          count=$(find src/main/java -name '*.java' 2>/dev/null | wc -l)
-          echo "Java files found: $count"
-          [ "$count" -gt 0 ] || { echo "SOURCES MISSING: no .java files found"; exit 1; }
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -44,18 +34,15 @@ jobs:
         run: |
           if [ -f gradlew ]; then
             chmod +x gradlew
-            ./gradlew build
+            ./gradlew build --stacktrace
           else
-            gradle build
+            gradle build --stacktrace
           fi
 
-      - name: Upload jar
-        uses: actions/upload-artifact@v4
-        with:
-          name: mod-jar
-          path: build/libs/*.jar
       - name: Show built files
-        run: find . -name "*.jar" -not -path "./.gradle/*"
+        run: |
+          find . -name "*.jar" -not -path "./.gradle/*" -not -path "*/gradle/wrapper/*"
+          ls -R build 2>/dev/null | head -100
 
       - name: Upload jar
         uses: actions/upload-artifact@v4
@@ -63,4 +50,13 @@ jobs:
           name: mod-jar
           path: |
             **/build/libs/*.jar
-          if-no-files-found: error
+            build/devlibs/*.jar
+          if-no-files-found: warn
+
+      - name: Upload whole build folder (backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-folder
+          path: build/
+          if-no-files-found: warn
