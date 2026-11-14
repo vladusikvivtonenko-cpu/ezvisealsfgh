@@ -54,3 +54,13 @@ jobs:
         with:
           name: mod-jar
           path: build/libs/*.jar
+      - name: Show built files
+        run: find . -name "*.jar" -not -path "./.gradle/*"
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: mod-jar
+          path: |
+            **/build/libs/*.jar
+          if-no-files-found: error
