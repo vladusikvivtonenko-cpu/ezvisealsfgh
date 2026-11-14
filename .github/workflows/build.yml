@@ -1,36 +1,56 @@
-name: Build Gradle Project
+name: build
 
 on:
   push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      - name: Show files
+        run: ls -la
+
+      - name: Move root .java files into src/main/java by package
+        run: |
+          shopt -s nullglob
+          for f in *.java; do
+            pkg=$(grep -m1 -E '^\s*package\s+[a-zA-Z0-9_.]+\s*;' "$f" | sed -E 's/^\s*package\s+([a-zA-Z0-9_.]+)\s*;.*/\1/')
+            if [ -z "$pkg" ]; then pkg="com.ezvisuals"; fi
+            dir="src/main/java/$(echo "$pkg" | tr . /)"
+            mkdir -p "$dir"
+            mv "$f" "$dir/"
+            echo "Moved $f -> $dir/"
+          done
+
+      - name: Check sources
+        run: |
+          count=$(find src/main/java -name '*.java' 2>/dev/null | wc -l)
+          echo "Java files found: $count"
+          [ "$count" -gt 0 ] || { echo "SOURCES MISSING: no .java files found"; exit 1; }
+
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
-          distribution: 'temurin'
+          distribution: temurin
+          java-version: 21
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Setup Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build with Gradle
-        run: ./gradlew build
+      - name: Build
+        run: |
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew build
+          else
+            gradle build
+          fi
 
-      - name: Upload build artifact
+      - name: Upload jar
         uses: actions/upload-artifact@v4
         with:
-          name: ezvisuals-build
+          name: mod-jar
           path: build/libs/*.jar
