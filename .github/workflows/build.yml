@@ -1,14 +1,31 @@
 package com.ezvisuals;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.render.*;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.item.BlockItem;
+import net.minecraft.network.packet.c2s.play.HandSwingC2SPacket;
+import net.minecraft.util.ActionResult;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.*;
+import org.joml.Matrix4f;
 import org.lwjgl.glfw.GLFW;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class EzVisuals implements ClientModInitializer {
 
@@ -22,80 +39,210 @@ public class EzVisuals implements ClientModInitializer {
     public static String toast = "";
     public static long toastUntil = 0L;
 
+    // Налаштування будівництва
+    public static int buildMode = 1; // 0 = SINGLE, 1 = BRIDGE, 2 = WALL 3x3, 3 = FLOOR 3x3
+    public static boolean safeWalk = true;
+    public static boolean fastPlace = true;
+    public static boolean autoBuild = false;
+
+    private static boolean forcedSneak = false;
+    private static int buildDelay = 0;
+
     private static KeyBinding openGuiKey;
     private static KeyBinding cycleBuildModeKey;
     private static KeyBinding toggleAutoBuildKey;
 
     @Override
     public void onInitializeClient() {
-        // Реєстрація клавіш керування
         openGuiKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.ezvisuals.gui",
-                InputUtil.Type.KEYSYM,
-                GLFW.GLFW_KEY_RIGHT_SHIFT,
-                "EzVisuals"
+                "key.ezvisuals.gui", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_SHIFT, "EzVisuals"
         ));
-
         cycleBuildModeKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.ezvisuals.build_mode",
-                InputUtil.Type.KEYSYM,
-                GLFW.GLFW_KEY_B,
-                "EzVisuals"
+                "key.ezvisuals.build_mode", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_B, "EzVisuals"
         ));
-
         toggleAutoBuildKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.ezvisuals.autobuild",
-                InputUtil.Type.KEYSYM,
-                GLFW.GLFW_KEY_N,
-                "EzVisuals"
+                "key.ezvisuals.autobuild", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_N, "EzVisuals"
         ));
 
-        // Рендер 2D HUD (нова ватермарка, броня, тотеми, зілля)
         HudRenderCallback.EVENT.register((drawContext, tickCounter) -> EzHud.render(drawContext));
 
-        // Рендер 3D світу (предикти предметів + прев'ю будівництва)
         WorldRenderEvents.AFTER_TRANSLUCENT.register(ctx -> {
             EzPredict.renderWorld(ctx);
-            EzBuilder.renderPreview(ctx);
+            renderBuildPreview(ctx);
         });
 
-        // Щотікова обробка (бінди + будівництво SafeWalk / FastPlace / AutoBuild)
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
             if (mc.player == null || mc.world == null) return;
 
-            // Відкриття меню на Right Shift
             while (openGuiKey.wasPressed()) {
-                mc.setScreen(new EzScreen());
+                openEzScreen(mc);
             }
 
-            // Перемикання режиму будівництва на B (SINGLE -> BRIDGE -> WALL_3X3 -> FLOOR_3X3)
             while (cycleBuildModeKey.wasPressed()) {
-                EzBuilder.BuildMode[] modes = EzBuilder.BuildMode.values();
-                EzBuilder.currentMode = modes[(EzBuilder.currentMode.ordinal() + 1) % modes.length];
-                showToast("Build Mode: " + EzBuilder.currentMode.name(), 2000);
+                buildMode = (buildMode + 1) % 4;
+                String[] names = {"SINGLE", "BRIDGE", "WALL 3x3", "FLOOR 3x3"};
+                showToast("Build: " + names[buildMode], 2000);
             }
 
-            // Увімкнення / вимкнення AutoBuild на N
             while (toggleAutoBuildKey.wasPressed()) {
-                EzBuilder.autoBuild = !EzBuilder.autoBuild;
-                showToast("AutoBuild: " + (EzBuilder.autoBuild ? "ON" : "OFF"), 2000);
+                autoBuild = !autoBuild;
+                showToast("AutoBuild: " + (autoBuild ? "ON" : "OFF"), 2000);
             }
 
-            // Тік модуля будівництва
-            EzBuilder.onTick(mc);
+            tickBuilder(mc);
         });
     }
 
-    public static boolean inCombat() {
-        return System.currentTimeMillis() - lastCombatMs < 8000L;
+    private static void openEzScreen(MinecraftClient mc) {
+        try {
+            mc.setScreen(EzScreen.class.getDeclaredConstructor().newInstance());
+        } catch (Exception e) {
+            try {
+                mc.setScreen(EzScreen.class.getDeclaredConstructor(Screen.class).newInstance((Screen) null));
+            } catch (Exception ignored) {
+            }
+        }
     }
 
-    public static void triggerCombat() {
-        lastCombatMs = System.currentTimeMillis();
+    private static void tickBuilder(MinecraftClient mc) {
+        if (mc.interactionManager == null) return;
+
+        Hand hand = null;
+        if (mc.player.getMainHandStack().getItem() instanceof BlockItem) hand = Hand.MAIN_HAND;
+        else if (mc.player.getOffHandStack().getItem() instanceof BlockItem) hand = Hand.OFF_HAND;
+
+        boolean hasBlock = hand != null;
+
+        // SafeWalk на краю блока
+        if (safeWalk && hasBlock && mc.player.isOnGround()) {
+            BlockPos below = mc.player.getBlockPos().down();
+            Vec3d p = mc.player.getPos();
+            double dx = p.x - Math.floor(p.x);
+            double dz = p.z - Math.floor(p.z);
+            boolean edge = dx < 0.22 || dx > 0.78 || dz < 0.22 || dz > 0.78;
+
+            if (edge && mc.world.getBlockState(below).isReplaceable()) {
+                mc.options.sneakKey.setPressed(true);
+                forcedSneak = true;
+            } else if (forcedSneak) {
+                mc.options.sneakKey.setPressed(false);
+                forcedSneak = false;
+            }
+        } else if (forcedSneak) {
+            mc.options.sneakKey.setPressed(false);
+            forcedSneak = false;
+        }
+
+        if (!hasBlock) return;
+
+        // FastPlace при затиснутій ПКМ
+        if (fastPlace && mc.options.useKey.isPressed() && mc.crosshairTarget instanceof BlockHitResult bhr) {
+            if (bhr.getType() == HitResult.Type.BLOCK) {
+                ActionResult res = mc.interactionManager.interactBlock(mc.player, hand, bhr);
+                if (res.isAccepted()) mc.player.swingHand(hand);
+            }
+        }
+
+        // AutoBuild за схемою
+        if (autoBuild) {
+            if (buildDelay > 0) {
+                buildDelay--;
+                return;
+            }
+            for (BlockPos target : getBuildTargets(mc)) {
+                if (!mc.world.getBlockState(target).isReplaceable()) continue;
+                if (mc.player.getEyePos().distanceTo(Vec3d.ofCenter(target)) > 4.5) continue;
+                if (mc.player.getBoundingBox().intersects(new Box(target))) continue;
+
+                Direction support = findSupport(mc, target);
+                if (support != null) {
+                    BlockPos neighbor = target.offset(support);
+                    Direction face = support.getOpposite();
+                    Vec3d hitVec = Vec3d.ofCenter(neighbor).add(face.getOffsetX() * 0.5, face.getOffsetY() * 0.5, face.getOffsetZ() * 0.5);
+
+                    ActionResult res = mc.interactionManager.interactBlock(mc.player, hand, new BlockHitResult(hitVec, face, neighbor, false));
+                    if (res.isAccepted()) {
+                        mc.player.swingHand(hand);
+                        if (mc.getNetworkHandler() != null) {
+                            mc.getNetworkHandler().sendPacket(new HandSwingC2SPacket(hand));
+                        }
+                        buildDelay = 1;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
-    public static void showToast(String message, long durationMs) {
-        toast = message;
-        toastUntil = System.currentTimeMillis() + durationMs;
+    private static void renderBuildPreview(WorldRenderContext ctx) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.player == null || mc.world == null) return;
+        boolean hasBlock = mc.player.getMainHandStack().getItem() instanceof BlockItem
+                || mc.player.getOffHandStack().getItem() instanceof BlockItem;
+        if (!hasBlock) return;
+
+        List<BlockPos> targets = getBuildTargets(mc);
+        if (targets.isEmpty()) return;
+
+        MatrixStack matrices = ctx.matrixStack();
+        Vec3d cam = ctx.camera().getPos();
+
+        matrices.push();
+        matrices.translate(-cam.x, -cam.y, -cam.z);
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableCull();
+        RenderSystem.depthMask(false);
+        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+
+        int accent = EzConfig.accent();
+        for (BlockPos pos : targets) {
+            boolean free = mc.world.getBlockState(pos).isReplaceable();
+            int col = free ? (autoBuild ? 0xFF00FF88 : accent) : 0x55FF4444;
+            drawBox(matrices, new Box(pos), col);
+        }
+
+        RenderSystem.depthMask(true);
+        RenderSystem.enableCull();
+        RenderSystem.disableBlend();
+        matrices.pop();
     }
-}
+
+    private static List<BlockPos> getBuildTargets(MinecraftClient mc) {
+        List<BlockPos> list = new ArrayList<>();
+        Direction facing = mc.player.getHorizontalFacing();
+        BlockPos base = (mc.crosshairTarget instanceof BlockHitResult bhr && bhr.getType() == HitResult.Type.BLOCK)
+                ? bhr.getBlockPos().offset(bhr.getSide())
+                : mc.player.getBlockPos().down().offset(facing);
+
+        switch (buildMode) {
+            case 0 -> list.add(base);
+            case 1 -> {
+                BlockPos start = mc.player.getBlockPos().down();
+                for (int i = 1; i <= 5; i++) list.add(start.offset(facing, i));
+            }
+            case 2 -> {
+                Direction right = facing.rotateYClockwise();
+                for (int dy = 0; dy < 3; dy++)
+                    for (int dx = -1; dx <= 1; dx++)
+                        list.add(base.up(dy).offset(right, dx));
+            }
+            case 3 -> {
+                for (int dx = -1; dx <= 1; dx++)
+                    for (int dz = -1; dz <= 1; dz++)
+                        list.add(base.add(dx, 0, dz));
+            }
+        }
+        return list;
+    }
+
+    private static Direction findSupport(MinecraftClient mc, BlockPos pos) {
+        Direction[] dirs = {Direction.DOWN, Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST, Direction.UP};
+        for (Direction d : dirs) {
+            BlockState st = mc.world.getBlockState(pos.offset(d));
+            if (!st.isAir() && !st.isReplaceable()) return d;
+        }
+        return null;
+    }
+
