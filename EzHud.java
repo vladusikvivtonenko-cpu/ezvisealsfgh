@@ -3,20 +3,23 @@ package com.ezvisuals;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.registry.tag.ItemTags;
+import net.minecraft.util.hit.EntityHitResult;
 
 import java.util.*;
 
 public class EzHud {
-    private static final EquipmentSlot[] ARMOR = {EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
+    private static final EquipmentSlot[] ARMOR = {
+            EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET
+    };
 
     public static void render(DrawContext c) {
         MinecraftClient mc = MinecraftClient.getInstance();
@@ -31,17 +34,7 @@ public class EzHud {
         if (k.itemGlow) itemGlow(c, mc, w, h);
 
         if (k.topBar) {
-            String s = "ezvisuals  |  " + EzVisuals.FOUNDER + "  |  " + mc.getCurrentFps() + " FPS  |  "
-                    + String.format(Locale.US, "%.1f", EzVisuals.tps) + " TPS  |  XYZ "
-                    + (int) Math.floor(mc.player.getX()) + " " + (int) Math.floor(mc.player.getY()) + " " + (int) Math.floor(mc.player.getZ());
-            int tw = t.getWidth(s);
-            c.fill(6, 6, 6 + tw + 14, 22, 0xB0101018);
-            c.fill(6, 6, 6 + tw + 14, 8, acc);
-            c.drawText(t, s, 13, 11, 0xFFFFFFFF, true);
-            if (k.pvpSafe && EzVisuals.inCombat()) {
-                long left = 8000 - (System.currentTimeMillis() - EzVisuals.lastCombatMs);
-                c.drawText(t, "PvP Safe: combat " + (left / 1000 + 1) + "s", 8, 26, 0xFFFF5555, true);
-            }
+            renderWatermark(c, mc, t, acc);
         }
 
         int y = h / 2 - 40;
@@ -50,7 +43,9 @@ public class EzHud {
         if (k.cooldownsHud) cooldowns(c, mc, t, y + 6, acc);
         if (k.potionHud) potions(c, mc, t, w);
         if (k.nearbyPlayers) nearby(c, mc, t, acc);
-        if (k.lookSlots && EzVisuals.lookSlotsEnabled && mc.crosshairTarget instanceof EntityHitResult hit && hit.getEntity() instanceof PlayerEntity target) lookSlots(c, mc, t, target, acc);
+        if (k.lookSlots && EzVisuals.lookSlotsEnabled && mc.crosshairTarget instanceof EntityHitResult hit && hit.getEntity() instanceof PlayerEntity target) {
+            lookSlots(c, mc, t, target, acc);
+        }
         if (k.fullBridge && EzVisuals.bridgeEnabled) bridgeGuide(c, mc, t, w, h, acc);
         if (k.swimAnimation && mc.player.isSwimming()) swimIndicator(c, t, w, h, k.swimAmount, acc);
 
@@ -60,16 +55,93 @@ public class EzHud {
         }
     }
 
+    private static void renderWatermark(DrawContext c, MinecraftClient mc, TextRenderer t, int acc) {
+        int ping = getPing(mc);
+        int fps = mc.getCurrentFps();
+
+        String brand = "EzVisuals";
+        String sep = "  /  ";
+        String pingStr = ping + " ms";
+        String fpsStr = fps + " FPS";
+
+        int iconW = 14;
+        int gap = 5;
+        int padX = 7;
+        int padY = 5;
+
+        int textW = t.getWidth(brand) + t.getWidth(sep) * 2 + t.getWidth(pingStr) + t.getWidth(fpsStr);
+        int boxW = padX * 2 + iconW + gap + textW;
+        int boxH = padY * 2 + t.fontHeight;
+
+        int x = 6;
+        int yTop = 6;
+
+        c.fill(x, yTop, x + boxW, yTop + boxH, 0xD80D0D14);
+        c.fill(x, yTop, x + boxW, yTop + 1, 0x25FFFFFF);
+        c.fill(x, yTop + boxH - 1, x + boxW, yTop + boxH, 0x60000000);
+
+        int pulseColor = 0xFF5B5CE6;
+        drawPulseIcon(c, x + padX, yTop + boxH / 2, pulseColor);
+
+        int curX = x + padX + iconW + gap;
+        int textY = yTop + padY + 1;
+
+        c.drawText(t, brand, curX, textY, 0xFFFFFFFF, false);
+        curX += t.getWidth(brand);
+
+        c.drawText(t, sep, curX, textY, 0xFF6E6E7A, false);
+        curX += t.getWidth(sep);
+
+        c.drawText(t, pingStr, curX, textY, 0xFFE5E5EA, false);
+        curX += t.getWidth(pingStr);
+
+        c.drawText(t, sep, curX, textY, 0xFF6E6E7A, false);
+        curX += t.getWidth(sep);
+
+        c.drawText(t, fpsStr, curX, textY, 0xFFE5E5EA, false);
+
+        if (EzConfig.I.pvpSafe && EzVisuals.inCombat()) {
+            long left = 8000 - (System.currentTimeMillis() - EzVisuals.lastCombatMs);
+            c.drawText(t, "PvP Safe: combat " + (left / 1000 + 1) + "s", x, yTop + boxH + 4, 0xFFFF5555, true);
+        }
+    }
+
+    private static int getPing(MinecraftClient mc) {
+        if (mc.getNetworkHandler() != null && mc.player != null) {
+            PlayerListEntry entry = mc.getNetworkHandler().getPlayerListEntry(mc.player.getUuid());
+            if (entry != null) return entry.getLatency();
+        }
+        return 0;
+    }
+
+    private static void drawPulseIcon(DrawContext c, int x, int midY, int col) {
+        int glow = (col & 0x00FFFFFF) | 0x40000000;
+        c.fill(x, midY - 1, x + 14, midY + 2, glow);
+        c.fill(x, midY, x + 3, midY + 1, col);
+        c.fill(x + 3, midY - 2, x + 4, midY, col);
+        c.fill(x + 4, midY - 4, x + 5, midY - 2, col);
+        c.fill(x + 5, midY - 3, x + 6, midY + 1, col);
+        c.fill(x + 6, midY + 1, x + 7, midY + 4, col);
+        c.fill(x + 7, midY + 1, x + 8, midY + 3, col);
+        c.fill(x + 8, midY - 1, x + 9, midY + 1, col);
+        c.fill(x + 9, midY, x + 14, midY + 1, col);
+    }
+
     static int armorPercent(PlayerEntity p) {
         int tot = 0, max = 0;
         for (EquipmentSlot s : ARMOR) {
             ItemStack st = p.getEquippedStack(s);
-            if (!st.isEmpty() && st.isDamageable()) { tot += st.getMaxDamage() - st.getDamage(); max += st.getMaxDamage(); }
+            if (!st.isEmpty() && st.isDamageable()) {
+                tot += st.getMaxDamage() - st.getDamage();
+                max += st.getMaxDamage();
+            }
         }
         return max == 0 ? 0 : tot * 100 / max;
     }
 
-    private static int pctColor(int pc) { return pc > 60 ? 0xFF55FF55 : pc > 30 ? 0xFFFFC83D : 0xFFFF5555; }
+    private static int pctColor(int pc) {
+        return pc > 60 ? 0xFF55FF55 : pc > 30 ? 0xFFFFC83D : 0xFFFF5555;
+    }
 
     private static int armor(DrawContext c, MinecraftClient mc, TextRenderer t, int y, int acc) {
         c.fill(4, y - 4, 70, y + 4 * 18 + 14, 0x90101018);
@@ -92,7 +164,9 @@ public class EzHud {
     private static int totems(DrawContext c, MinecraftClient mc, TextRenderer t, int y) {
         PlayerInventory inv = mc.player.getInventory();
         int n = 0;
-        for (int i = 0; i < inv.size(); i++) if (inv.getStack(i).isOf(Items.TOTEM_OF_UNDYING)) n += 1;
+        for (int i = 0; i < inv.size(); i++) {
+            if (inv.getStack(i).isOf(Items.TOTEM_OF_UNDYING)) n += 1;
+        }
         boolean off = mc.player.getOffHandStack().isOf(Items.TOTEM_OF_UNDYING);
         c.drawText(t, "Totems: " + n, 8, y, n > 0 ? 0xFFFFFFFF : 0xFFFF5555, true);
         if (n > 0 && !off) c.drawText(t, "Offhand: no totem!", 8, y + 10, 0xFFFF5555, true);
@@ -137,7 +211,9 @@ public class EzHud {
 
     private static void nearby(DrawContext c, MinecraftClient mc, TextRenderer t, int acc) {
         List<PlayerEntity> list = new ArrayList<>();
-        for (PlayerEntity p : mc.world.getPlayers()) if (p != mc.player && p.distanceTo(mc.player) < 64) list.add(p);
+        for (PlayerEntity p : mc.world.getPlayers()) {
+            if (p != mc.player && p.distanceTo(mc.player) < 64) list.add(p);
+        }
         list.sort(Comparator.comparingDouble(p -> p.distanceTo(mc.player)));
         int y = 40;
         for (int i = 0; i < Math.min(5, list.size()); i++) {
@@ -155,92 +231,3 @@ public class EzHud {
             int col;
             if (s.isIn(ItemTags.SWORDS)) col = 0xFF4040;
             else if (s.isIn(ItemTags.PICKAXES)) col = 0x40E0FF;
-            else if (s.isIn(ItemTags.AXES)) col = 0xFF9A30;
-            else continue;
-            int x = w / 2 - 91 + i * 20, y = h - 22;
-            c.fill(x, y, x + 22, y + 22, 0x30000000 | col);
-            int b = 0xFF000000 | col;
-            c.fill(x, y, x + 22, y + 1, b);
-            c.fill(x, y + 21, x + 22, y + 22, b);
-            c.fill(x, y, x + 1, y + 22, b);
-            c.fill(x + 21, y, x + 22, y + 22, b);
-        }
-    }
-
-
-    private static void lookSlots(DrawContext c, MinecraftClient mc, TextRenderer t, PlayerEntity target, int acc) {
-        int x = c.getScaledWindowWidth() / 2 + 110, y = c.getScaledWindowHeight() / 2 - 42;
-        c.fill(x - 5, y - 5, x + 72, y + 90, 0xB0101018);
-        c.fill(x - 5, y - 5, x + 72, y - 3, acc);
-        c.drawText(t, target.getName().getString(), x, y, 0xFFFFFFFF, true);
-        int yy = y + 13;
-        for (EquipmentSlot slot : ARMOR) {
-            ItemStack stack = target.getEquippedStack(slot);
-            c.drawItem(stack, x, yy);
-            String label = stack.isEmpty() ? "Empty" : stack.getName().getString();
-            if (label.length() > 9) label = label.substring(0, 9);
-            c.drawText(t, label, x + 20, yy + 5, 0xFFCCCCCC, false);
-            yy += 18;
-        }
-        c.drawText(t, "HP " + (int) target.getHealth(), x, yy + 1, acc, true);
-    }
-
-    private static void bridgeGuide(DrawContext c, MinecraftClient mc, TextRenderer t, int w, int h, int acc) {
-        ItemStack hand = mc.player.getMainHandStack();
-        if (hand.isEmpty() || !(hand.getItem() instanceof net.minecraft.item.BlockItem)) return;
-        int x = w / 2, y = h / 2 + 28;
-        c.fill(x - 48, y - 10, x + 48, y + 20, 0xA0101018);
-        c.fill(x - 48, y - 10, x + 48, y - 8, acc);
-        c.drawText(t, "FULL BRIDGE", x - 34, y - 4, 0xFFFFFFFF, true);
-        c.drawText(t, "Align + hold sneak", x - 42, y + 8, 0xFFBBBBBB, false);
-    }
-
-    private static void swimIndicator(DrawContext c, TextRenderer t, int w, int h, float amount, int acc) {
-        int width = 28 + (int)(Math.max(0, Math.min(1, amount)) * 52);
-        int x = w / 2 - width / 2, y = h - 48;
-        c.fill(x, y, x + width, y + 12, 0xA0101018);
-        c.fill(x, y, x + width, y + 2, acc);
-        c.drawText(t, "SWIMMING", x + 5, y + 3, 0xFFFFFFFF, false);
-    }
-
-    private static void blood(DrawContext c, int w, int h) {
-        // Sparse edge-only red flecks; deliberately avoids covering the center/reticle.
-        for (int i = 0; i < 22; i++) {
-            float x = rnd(i, 81) * w;
-            float y = rnd(i, 82) * h;
-            if (x > w * .28f && x < w * .72f && y > h * .22f && y < h * .78f) continue;
-            int size = 1 + (int)(rnd(i, 83) * 3);
-            c.fill((int)x, (int)y, (int)x + size, (int)y + size * 2, 0x66FF173D);
-        }
-    }
-
-    private static float rnd(int i, int salt) {
-        int h = i * 374761393 + salt * 668265263;
-        h = (h ^ (h >>> 13)) * 1274126177;
-        return ((h ^ (h >>> 16)) & 0xFFFF) / 65535f;
-    }
-
-    // 2D overlay effects (NOT real shaders): 1 rain, 2 snow, 3 space
-    private static void weather(DrawContext c, int w, int h, EzConfig k) {
-        float t = (System.currentTimeMillis() % 1000000L) / 1000f;
-        int n = (int) k.weatherDensity;
-        for (int i = 0; i < n; i++) {
-            if (k.weather == 1) {
-                float x = rnd(i, 1) * w;
-                float y = (rnd(i, 3) * h + t * (250 + rnd(i, 2) * 200)) % h;
-                c.fill((int) x, (int) y, (int) x + 1, (int) y + 9, 0x66A0C8FF);
-            } else if (k.weather == 2) {
-                float x = (rnd(i, 1) * w + (float) Math.sin(t * (0.5f + rnd(i, 4)) + i) * 12 + w) % w;
-                float y = (rnd(i, 3) * h + t * (30 + rnd(i, 2) * 40)) % h;
-                int s = 1 + (int) (rnd(i, 5) * 2);
-                c.fill((int) x, (int) y, (int) x + s, (int) y + s, 0xCCFFFFFF);
-            } else {
-                float x = rnd(i, 1) * w, y = rnd(i, 3) * h;
-                int a = 80 + (int) (175 * (0.5 + 0.5 * Math.sin(t * 2 + i)));
-                int s = rnd(i, 5) > 0.85f ? 2 : 1;
-                c.fill((int) x, (int) y, (int) x + s, (int) y + s, (a << 24) | 0xFFFFFF);
-            }
-        }
-        if (k.weather == 3) c.fillGradient(0, 0, w, h, 0x300A0A30, 0x30301060);
-    }
-}
