@@ -1,133 +1,101 @@
-name: build
+package com.ezvisuals;
 
-on:
-  push:
-  workflow_dispatch:
+import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.util.InputUtil;
+import org.lwjgl.glfw.GLFW;
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+public class EzVisuals implements ClientModInitializer {
 
-      - name: Move root .java files into src/main/java by package
-        run: |
-          shopt -s nullglob
-          for f in *.java; do
-            pkg=$(grep -m1 -E '^\s*package\s+[a-zA-Z0-9_.]+\s*;' "$f" | sed -E 's/^\s*package\s+([a-zA-Z0-9_.]+)\s*;.*/\1/')
-            if [ -z "$pkg" ]; then pkg="com.ezvisuals"; fi
-            dir="src/main/java/$(echo "$pkg" | tr . /)"
-            mkdir -p "$dir"
-            mv "$f" "$dir/"
-          done
+    public static final String FOUNDER = "EzVisuals";
+    public static double tps = 20.0;
 
-      - name: Generate Gradle files for Fabric 1.21.4
-        run: |
-          cat > settings.gradle << 'EOF'
-          pluginManagement {
-              repositories {
-                  maven { url = 'https://maven.fabricmc.net/' }
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-          }
-          rootProject.name = 'ezvisuals'
-          EOF
+    public static boolean lookSlotsEnabled = true;
+    public static boolean bridgeEnabled = true;
 
-          cat > gradle.properties << 'EOF'
-          org.gradle.jvmargs=-Xmx2G
-          org.gradle.parallel=true
-          minecraft_version=1.21.4
-          yarn_mappings=1.21.4+build.8
-          loader_version=0.16.10
-          fabric_version=0.119.3+1.21.4
-          mod_version=1.0.0
-          maven_group=com.ezvisuals
-          archives_base_name=ezvisuals
-          EOF
+    public static long lastCombatMs = 0L;
+    public static String toast = "";
+    public static long toastUntil = 0L;
 
-          cat > build.gradle << 'EOF'
-          plugins {
-              id 'fabric-loom' version '1.9-SNAPSHOT'
-          }
+    private static KeyBinding openGuiKey;
+    private static KeyBinding cycleBuildModeKey;
+    private static KeyBinding toggleAutoBuildKey;
 
-          version = project.mod_version
-          group = project.maven_group
+    @Override
+    public void onInitializeClient() {
+        // Реєстрація клавіш керування
+        openGuiKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.ezvisuals.gui",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_RIGHT_SHIFT,
+                "EzVisuals"
+        ));
 
-          base {
-              archivesName = project.archives_base_name
-          }
+        cycleBuildModeKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.ezvisuals.build_mode",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_B,
+                "EzVisuals"
+        ));
 
-          dependencies {
-              minecraft "com.mojang:minecraft:${project.minecraft_version}"
-              mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
-              modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
-              modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-          }
+        toggleAutoBuildKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.ezvisuals.autobuild",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_N,
+                "EzVisuals"
+        ));
 
-          tasks.withType(JavaCompile).configureEach {
-              it.options.release = 21
-          }
+        // Рендер 2D HUD (нова ватермарка, броня, тотеми, зілля)
+        HudRenderCallback.EVENT.register((drawContext, tickCounter) -> EzHud.render(drawContext));
 
-          java {
-              sourceCompatibility = JavaVersion.VERSION_21
-              targetCompatibility = JavaVersion.VERSION_21
-          }
-          EOF
+        // Рендер 3D світу (предикти предметів + прев'ю будівництва)
+        WorldRenderEvents.AFTER_TRANSLUCENT.register(ctx -> {
+            EzPredict.renderWorld(ctx);
+            EzBuilder.renderPreview(ctx);
+        });
 
-      - name: Generate fabric.mod.json and mixins json if missing
-        run: |
-          mkdir -p src/main/resources
+        // Щотікова обробка (бінди + будівництво SafeWalk / FastPlace / AutoBuild)
+        ClientTickEvents.END_CLIENT_TICK.register(mc -> {
+            if (mc.player == null || mc.world == null) return;
 
-          # mixins config
-          if ! ls src/main/resources/*.mixins.json >/dev/null 2>&1; then
-            ml=$(find src/main/java -name '*Mixin.java')
-            if [ -n "$ml" ]; then
-              first=$(echo "$ml" | head -1)
-              xpkg=$(grep -m1 -E '^\s*package' "$first" | sed -E 's/^\s*package\s+([a-zA-Z0-9_.]+)\s*;.*/\1/')
-              names=$(for f in $ml; do echo "\"$(basename "$f" .java)\""; done | paste -sd, -)
-              echo "{\"required\":true,\"package\":\"$xpkg\",\"compatibilityLevel\":\"JAVA_21\",\"client\":[$names]}" > src/main/resources/ezvisuals.mixins.json
-              echo "mixins json created"
-            fi
-          fi
+            // Відкриття меню на Right Shift
+            while (openGuiKey.wasPressed()) {
+                mc.setScreen(new EzScreen());
+            }
 
-          # fabric.mod.json
-          if [ ! -f src/main/resources/fabric.mod.json ]; then
-            main=$(grep -rl "ClientModInitializer" src/main/java | head -1)
-            mpkg=$(grep -m1 -E '^\s*package' "$main" | sed -E 's/^\s*package\s+([a-zA-Z0-9_.]+)\s*;.*/\1/')
-            mcls=$(basename "$main" .java)
-            mix=""
-            if [ -f src/main/resources/ezvisuals.mixins.json ]; then mix=",\"mixins\":[\"ezvisuals.mixins.json\"]"; fi
-            echo "{\"schemaVersion\":1,\"id\":\"ezvisuals\",\"version\":\"1.0.0\",\"name\":\"EzVisuals\",\"environment\":\"client\",\"entrypoints\":{\"client\":[\"$mpkg.$mcls\"]}$mix,\"depends\":{\"fabricloader\":\">=0.16.0\",\"minecraft\":\"~1.21.4\",\"java\":\">=21\",\"fabric-api\":\"*\"}}" > src/main/resources/fabric.mod.json
-            echo "fabric.mod.json created"
-          fi
+            // Перемикання режиму будівництва на B (SINGLE -> BRIDGE -> WALL_3X3 -> FLOOR_3X3)
+            while (cycleBuildModeKey.wasPressed()) {
+                EzBuilder.BuildMode[] modes = EzBuilder.BuildMode.values();
+                EzBuilder.currentMode = modes[(EzBuilder.currentMode.ordinal() + 1) % modes.length];
+                showToast("Build Mode: " + EzBuilder.currentMode.name(), 2000);
+            }
 
-          cat src/main/resources/fabric.mod.json
-          cat src/main/resources/*.mixins.json || true
+            // Увімкнення / вимкнення AutoBuild на N
+            while (toggleAutoBuildKey.wasPressed()) {
+                EzBuilder.autoBuild = !EzBuilder.autoBuild;
+                showToast("AutoBuild: " + (EzBuilder.autoBuild ? "ON" : "OFF"), 2000);
+            }
 
-      - name: Set up Java 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
+            // Тік модуля будівництва
+            EzBuilder.onTick(mc);
+        });
+    }
 
-      - name: Set up Gradle 8.12
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.12
+    public static boolean inCombat() {
+        return System.currentTimeMillis() - lastCombatMs < 8000L;
+    }
 
-      - name: Build
-        run: gradle build --stacktrace
+    public static void triggerCombat() {
+        lastCombatMs = System.currentTimeMillis();
+    }
 
-      - name: Show built files
-        if: always()
-        run: find build -name "*.jar" 2>/dev/null
-
-      - name: Upload jar
-        uses: actions/upload-artifact@v4
-        with:
-          name: mod-jar
-          path: |
-            build/libs/*.jar
-            !build/libs/*-sources.jar
-          if-no-files-found: error
+    public static void showToast(String message, long durationMs) {
+        toast = message;
+        toastUntil = System.currentTimeMillis() + durationMs;
+    }
+}
