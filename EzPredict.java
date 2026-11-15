@@ -1,213 +1,122 @@
 package com.ezvisuals;
 
-import com.mojang.blaze3d.systems.RenderSystem;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.render.*;
-import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.*;
-import net.minecraft.util.math.*;
-import org.joml.Matrix4f;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.Vec3d;
 
-public class EzPredict {
+import java.util.Locale;
 
-    public static void renderWorld(WorldRenderContext ctx) {
+/**
+ * FunTime item zones: dust, divine aura, fire tornado (circles), trap and plast (boxes).
+ * Drawn through the same screen projection as Pred.java, so it needs no render-system calls.
+ * Trajectories (bow, crossbow, trident, pearl, potions) and the disorient / freeze / plast circles
+ * already live in Pred.java + the "FT Helper" module.
+ * EzPredict.init() is called from EzHud.init().
+ */
+public final class EzPredict {
+    private EzPredict() {}
+    private static boolean inited;
+
+    public static final Module ZONES = new Module("zones", "Ability Zones", "Combat",
+            "Circles and boxes for dust, divine aura, fire tornado, trap and plast items", true,
+            Setting.bool("text", "Show radius text", true),
+            Setting.num("dust", "Visible dust radius", 10, 1, 25, 0.5),
+            Setting.num("aura", "Divine aura radius", 5, 1, 25, 0.5),
+            Setting.num("tornado", "Fire tornado radius", 10, 1, 25, 0.5),
+            Setting.bool("trap", "Trap box (3x4x3)", true),
+            Setting.bool("plast", "Plast box (5x5)", true));
+
+    public static void init() {
+        if (inited) return;
+        inited = true;
+        Modules.ALL.add(ZONES);
+        HudRenderCallback.EVENT.register((ctx, tc) -> {
+            try {
+                render(ctx, tc.getTickDelta(false));
+            } catch (Throwable ex) {
+                Safe.err("ezpredict", ex);
+            }
+        });
+    }
+
+    private static boolean has(String n, String... keys) {
+        for (String k : keys) if (n.contains(k)) return true;
+        return false;
+    }
+
+    private static void render(DrawContext c, float td) {
         MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.player == null || mc.world == null) return;
+        if (!ZONES.enabled || mc.player == null || mc.world == null || mc.options.hudHidden) return;
+        ClientPlayerEntity p = mc.player;
+        ItemStack s = p.getMainHandStack();
+        if (s.isEmpty()) s = p.getOffHandStack();
+        if (s.isEmpty()) return;
 
-        ItemStack stack = mc.player.getMainHandStack();
-        if (stack.isEmpty()) stack = mc.player.getOffHandStack();
-        if (stack.isEmpty()) return;
+        String n = s.getName().getString().toLowerCase(Locale.ROOT);
+        Item it = s.getItem();
+        Vec3d pos = p.getLerpedPos(td).add(0, 0.05, 0);
 
-        String name = stack.getName().getString().toLowerCase();
-        Item item = stack.getItem();
-
-        MatrixStack matrices = ctx.matrixStack();
-        Vec3d cam = ctx.camera().getPos();
-
-        matrices.push();
-        matrices.translate(-cam.x, -cam.y, -cam.z);
-
-        RenderSystem.enableBlend();
-        RenderSystem.defaultBlendFunc();
-        RenderSystem.disableCull();
-        RenderSystem.depthMask(false);
-        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
-
-        Vec3d playerPos = mc.player.getPos();
-
-        // 1. ДЕЗОРІЄНТАЦІЯ (Око Ендера / назва "дезориентация") - радіус 10 блоків
-        if (name.contains("дезориентац") || name.contains("дезорієнтац") || item == Items.ENDER_EYE) {
-            drawCircle(matrices, playerPos.add(0, 0.1, 0), 10.0, 0xFFAA00FF, 64);
-        }
-        // 2. ЯВНА ПИЛЬ (Цукор / Світлопил / назва "явная пыль") - радіус 10 блоків
-        else if (name.contains("явная пыль") || name.contains("явна пиль") || item == Items.SUGAR || item == Items.GLOWSTONE_DUST) {
-            drawCircle(matrices, playerPos.add(0, 0.1, 0), 10.0, 0xFFFFFF55, 64);
-        }
-        // 3. БОЖА АУРА (Фантомна мембрана / Сльоза гаста / назва "божья аура") - радіус 5 блоків
-        else if (name.contains("божья аура") || name.contains("божа аура") || item == Items.PHANTOM_MEMBRANE || item == Items.GHAST_TEAR) {
-            drawCircle(matrices, playerPos.add(0, 0.1, 0), 5.0, 0xFF55FFFF, 48);
-        }
-        // 4. ВОГНЯНИЙ СМЕРЧ (Вогняний заряд / Стрижень іфрита / назва "огненный смерч") - радіус 10 блоків
-        else if (name.contains("огненный смерч") || name.contains("вогняний смерч") || item == Items.FIRE_CHARGE || item == Items.BLAZE_ROD) {
-            drawCircle(matrices, playerPos.add(0, 0.1, 0), 10.0, 0xFFFF5500, 64);
-        }
-        // 5. ТРАПКА (Незеритовий лом / назва "трапка") - бокс 3x4x3 навколо гравця
-        else if (name.contains("трапка") || item == Items.NETHERITE_SCRAP) {
-            BlockPos bp = mc.player.getBlockPos();
-            Box trapBox = new Box(bp.getX() - 1.0, bp.getY() - 1.0, bp.getZ() - 1.0,
-                                  bp.getX() + 2.0, bp.getY() + 3.0, bp.getZ() + 2.0);
-            drawBoxOutline(matrices, trapBox, 0xFFFF2244);
-        }
-        // 6. ПЛАСТ (Висушена ламінарія / Цегла / назва "пласт") - платформа 5x1x5 або стіна 5x5x1 по погляду
-        else if (name.contains("пласт") || item == Items.DRIED_KELP) {
-            Box plastBox = getPlastBox(mc.player);
-            drawBoxOutline(matrices, plastBox, 0xFF33AAFF);
-        }
-        // 7. ТРИЗУБЕЦЬ - траєкторія кидка
-        else if (item == Items.TRIDENT) {
-            renderTrajectory(matrices, mc.player, 2.5, 0.05, 0.99, 0.0, 0xFF00E5FF);
-        }
-        // 8. АРБАЛЕТ КРУШИТЕЛЯ / ЗВИЧАЙНИЙ АРБАЛЕТ - траєкторія болта
-        else if (item == Items.CROSSBOW) {
-            double vel = CrossbowItem.isCharged(stack) ? 3.15 : 3.15;
-            int col = name.contains("крушител") ? 0xFFFF0055 : 0xFFFFAA00;
-            renderTrajectory(matrices, mc.player, vel, 0.05, 0.99, 0.0, col);
-        }
-        // 9. ЛУК - траєкторія стріли з урахуванням натягу
-        else if (item == Items.BOW) {
-            int useTicks = mc.player.isUsingItem() ? stack.getMaxUseTime(mc.player) - mc.player.getItemUseTimeLeft() : 20;
-            float pull = BowItem.getPullProgress(useTicks);
-            if (pull < 0.1f) pull = 1.0f;
-            renderTrajectory(matrices, mc.player, pull * 3.0, 0.05, 0.99, 0.0, 0xFF55FF55);
-        }
-        // 10. ЕНДЕР-ПЕРЛ (ПЕРКА) - точна дуга телепортації
-        else if (item == Items.ENDER_PEARL) {
-            renderTrajectory(matrices, mc.player, 1.5, 0.03, 0.99, 0.0, 0xFFCC44FF);
-        }
-        // 11. ВИБУХОВІ ТА ОСІДАЮЧІ ЗІЛЛЯ - дуга + радіус сплешу 4.0 блоки в точці падіння
-        else if (item == Items.SPLASH_POTION || item == Items.LINGERING_POTION) {
-            renderTrajectory(matrices, mc.player, 0.5, 0.05, 0.99, 4.0, 0xFFFF66CC);
-        }
-
-        RenderSystem.depthMask(true);
-        RenderSystem.enableCull();
-        RenderSystem.disableBlend();
-        matrices.pop();
-    }
-
-    private static Box getPlastBox(PlayerEntity p) {
-        Vec3d look = p.getRotationVector();
-        Vec3d target = p.getEyePos().add(look.multiply(3.5));
-        BlockPos c = BlockPos.ofFloored(target);
-        // Якщо дивимось вгору/вниз — горизонтальний пласт 5x1x5, інакше вертикальна стіна 5x5
-        if (Math.abs(p.getPitch()) > 50.0f) {
-            return new Box(c.getX() - 2, c.getY(), c.getZ() - 2, c.getX() + 3, c.getY() + 1, c.getZ() + 3);
-        } else {
-            Direction dir = p.getHorizontalFacing();
-            if (dir.getAxis() == Direction.Axis.X) {
-                return new Box(c.getX(), c.getY() - 2, c.getZ() - 2, c.getX() + 1, c.getY() + 3, c.getZ() + 3);
-            } else {
-                return new Box(c.getX() - 2, c.getY() - 2, c.getZ(), c.getX() + 3, c.getY() + 3, c.getZ() + 1);
-            }
+        if (has(n, "явная пыль", "явна пиль") || it == Items.SUGAR || it == Items.GLOWSTONE_DUST) {
+            circle(c, mc, pos, ZONES.get("dust").d(), 0xFFFFFF55);
+        } else if (has(n, "божья аура", "божа аура") || it == Items.PHANTOM_MEMBRANE || it == Items.GHAST_TEAR) {
+            circle(c, mc, pos, ZONES.get("aura").d(), 0xFF55FFFF);
+        } else if (has(n, "огненный смерч", "вогняний смерч") || it == Items.FIRE_CHARGE || it == Items.BLAZE_ROD) {
+            circle(c, mc, pos, ZONES.get("tornado").d(), 0xFFFF5500);
+        } else if (ZONES.get("trap").b() && (has(n, "трапка") || it == Items.NETHERITE_SCRAP)) {
+            BlockPos b = p.getBlockPos();
+            box(c, mc, b.getX() - 1, b.getY() - 1, b.getZ() - 1, b.getX() + 2, b.getY() + 3, b.getZ() + 2, 0xFFFF2244);
+            label(c, mc, new Vec3d(b.getX() + 0.5, b.getY() + 3.3, b.getZ() + 0.5), "Trap 3x4x3", 0xFFFF2244);
+        } else if (ZONES.get("plast").b() && (has(n, "пласт") || it == Items.DRIED_KELP)) {
+            double[] q = plastBox(p);
+            box(c, mc, q[0], q[1], q[2], q[3], q[4], q[5], 0xFF33AAFF);
         }
     }
 
-    private static void renderTrajectory(MatrixStack matrices, PlayerEntity p, double velocity, double gravity, double drag, double splashRadius, int color) {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        float yaw = p.getYaw();
-        float pitch = p.getPitch();
-
-        double x = p.getX() - Math.cos(Math.toRadians(yaw)) * 0.16;
-        double y = p.getEyeY() - 0.1;
-        double z = p.getZ() - Math.sin(Math.toRadians(yaw)) * 0.16;
-
-        double vx = -Math.sin(Math.toRadians(yaw)) * Math.cos(Math.toRadians(pitch)) * velocity;
-        double vy = -Math.sin(Math.toRadians(pitch)) * velocity;
-        double vz = Math.cos(Math.toRadians(yaw)) * Math.cos(Math.toRadians(pitch)) * velocity;
-
-        Tessellator tess = Tessellator.getInstance();
-        BufferBuilder buf = tess.begin(VertexFormat.DrawMode.DEBUG_LINE_STRIP, VertexFormats.POSITION_COLOR);
-        Matrix4f mat = matrices.peek().getPositionMatrix();
-
-        float r = ((color >> 16) & 0xFF) / 255f;
-        float g = ((color >> 8) & 0xFF) / 255f;
-        float b = (color & 0xFF) / 255f;
-        float a = ((color >> 24) & 0xFF) / 255f;
-
-        Vec3d hitPos = null;
-
-        for (int i = 0; i < 150; i++) {
-            buf.vertex(mat, (float) x, (float) y, (float) z).color(r, g, b, a);
-
-            Vec3d curr = new Vec3d(x, y, z);
-            Vec3d next = new Vec3d(x + vx, y + vy, z + vz);
-
-            var hit = mc.world.raycast(new net.minecraft.world.RaycastContext(
-                    curr, next,
-                    net.minecraft.world.RaycastContext.ShapeType.COLLIDER,
-                    net.minecraft.world.RaycastContext.FluidHandling.NONE,
-                    p
-            ));
-
-            if (hit.getType() != net.minecraft.util.hit.HitResult.Type.MISS) {
-                hitPos = hit.getPos();
-                buf.vertex(mat, (float) hitPos.x, (float) hitPos.y, (float) hitPos.z).color(r, g, b, a);
-                break;
-            }
-
-            x += vx;
-            y += vy;
-            z += vz;
-            vx *= drag;
-            vy = vy * drag - gravity;
-            vz *= drag;
+    private static double[] plastBox(ClientPlayerEntity p) {
+        Vec3d target = p.getEyePos().add(p.getRotationVector().multiply(3.5));
+        BlockPos b = BlockPos.ofFloored(target);
+        if (Math.abs(p.getPitch()) > 50f) {
+            return new double[]{b.getX() - 2, b.getY(), b.getZ() - 2, b.getX() + 3, b.getY() + 1, b.getZ() + 3};
         }
+        Direction d = p.getHorizontalFacing();
+        if (d.getAxis() == Direction.Axis.X) {
+            return new double[]{b.getX(), b.getY() - 2, b.getZ() - 2, b.getX() + 1, b.getY() + 3, b.getZ() + 3};
+        }
+        return new double[]{b.getX() - 2, b.getY() - 2, b.getZ(), b.getX() + 3, b.getY() + 3, b.getZ() + 1};
+    }
 
-        BufferRenderer.drawWithGlobalProgram(buf.end());
-
-        if (hitPos != null) {
-            Box marker = new Box(hitPos.x - 0.25, hitPos.y - 0.05, hitPos.z - 0.25,
-                                 hitPos.x + 0.25, hitPos.y + 0.05, hitPos.z + 0.25);
-            drawBoxOutline(matrices, marker, color);
-            if (splashRadius > 0) {
-                drawCircle(matrices, hitPos.add(0, 0.05, 0), splashRadius, color, 48);
-            }
+    private static void circle(DrawContext c, MinecraftClient mc, Vec3d center, double r, int col) {
+        Proj.circle(c, mc, center, r, Draw.alpha(col, 0xE6), 72);
+        Proj.circle(c, mc, center, r * 0.97, Draw.alpha(col, 0x80), 72);
+        if (ZONES.get("text").b()) {
+            label(c, mc, center.add(0, 0.6, 0), "R " + String.format(Locale.ROOT, "%.1f", r), col);
         }
     }
 
-    private static void drawCircle(MatrixStack matrices, Vec3d center, double radius, int color, int segments) {
-        Tessellator tess = Tessellator.getInstance();
-        BufferBuilder buf = tess.begin(VertexFormat.DrawMode.DEBUG_LINE_STRIP, VertexFormats.POSITION_COLOR);
-        Matrix4f mat = matrices.peek().getPositionMatrix();
-
-        float r = ((color >> 16) & 0xFF) / 255f;
-        float g = ((color >> 8) & 0xFF) / 255f;
-        float b = (color & 0xFF) / 255f;
-        float a = ((color >> 24) & 0xFF) / 255f;
-
-        for (int i = 0; i <= segments; i++) {
-            double angle = 2.0 * Math.PI * i / segments;
-            float px = (float) (center.x + Math.cos(angle) * radius);
-            float pz = (float) (center.z + Math.sin(angle) * radius);
-            buf.vertex(mat, px, (float) center.y, pz).color(r, g, b, a);
-        }
-
-        BufferRenderer.drawWithGlobalProgram(buf.end());
+    private static void label(DrawContext c, MinecraftClient mc, Vec3d at, String txt, int col) {
+        int[] s = Proj.project(mc, at);
+        if (s == null) return;
+        Draw.rrect(c, s[0] - Draw.w(txt) / 2 - 3, s[1] - 2, Draw.w(txt) + 6, 12, 3, 0xC0000000);
+        Draw.textC(c, txt, s[0], s[1], col);
     }
 
-    private static void drawBoxOutline(MatrixStack matrices, Box box, int color) {
-        Tessellator tess = Tessellator.getInstance();
-        BufferBuilder buf = tess.begin(VertexFormat.DrawMode.DEBUG_LINES, VertexFormats.POSITION_COLOR);
-        Matrix4f mat = matrices.peek().getPositionMatrix();
-
-        float r = ((color >> 16) & 0xFF) / 255f;
-        float g = ((color >> 8) & 0xFF) / 255f;
-        float b = (color & 0xFF) / 255f;
-        float a = ((color >> 24) & 0xFF) / 255f;
-
-        float x1 = (float) box.minX, y1 = (float) box.minY, z1 = (float) box.minZ;
-        float x2 = (float) box.maxX, y2 = (float) box.maxY, z2 = (float) box.maxZ;
-
-        // Нижній контур
+    private static void box(DrawContext c, MinecraftClient mc, double x1, double y1, double z1,
+                            double x2, double y2, double z2, int col) {
+        int[][] p = new int[8][];
+        for (int i = 0; i < 8; i++) {
+            p[i] = Proj.project(mc, new Vec3d((i & 1) == 0 ? x1 : x2, (i & 2) == 0 ? y1 : y2, (i & 4) == 0 ? z1 : z2));
+        }
+        int[][] edges = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        for (int[] e : edges) {
+            int[] a = p[e[0]], b = p[e[1]];
+            if (a != null && b != null) Proj.line(c, a[0], a[1], b[0], b[1], Draw.alpha(col, 0xE0), 1);
+        }
+    }
+}
