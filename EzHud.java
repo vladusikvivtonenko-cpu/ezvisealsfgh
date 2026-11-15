@@ -1,233 +1,173 @@
 package com.ezvisuals;
 
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.network.PlayerListEntry;
-import net.minecraft.entity.EquipmentSlot;
-import net.minecraft.entity.effect.StatusEffectInstance;
+import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.Item;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.registry.tag.ItemTags;
-import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.item.BlockItem;
+import net.minecraft.util.math.Vec3d;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
 
-public class EzHud {
-    private static final EquipmentSlot[] ARMOR = {
-            EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET
-    };
+/**
+ * Extra HUD widgets: Nearby Players, Blood Vision, Swim Indicator, Bridge Guide.
+ * They are normal modules (shown in the menu, saved in the config).
+ * Call EzHud.init() once in EzVisualsPremium.onInitializeClient(), BEFORE Config.load("main").
+ */
+public final class EzHud {
+    private EzHud() {}
+    private static boolean inited;
 
-    public static void render(DrawContext c) {
+    public static final Module NEARBY = new Module("nearby", "Nearby Players", "HUD",
+            "List of players around you: HP, armor percent, distance", true,
+            Setting.num("max", "Max players", 5, 1, 10, 1),
+            Setting.num("dist", "Max distance", 64, 8, 128, 4),
+            Setting.bool("hp", "Show HP", true),
+            Setting.bool("armor", "Show armor %", true));
+
+    public static final Module BLOOD = new Module("bloodvision", "Blood Vision", "Visuals",
+            "Red screen edges when your HP is low or when you get hit", false,
+            Setting.num("low", "Low HP at", 8, 2, 19, 1),
+            Setting.num("strength", "Strength", 0.6, 0.2, 1.0, 0.1),
+            Setting.bool("hurt", "Flash when hit", true));
+
+    public static final Module SWIM = new Module("swimind", "Swim Indicator", "HUD",
+            "Wave indicator with your speed while you swim", true,
+            Setting.num("amount", "Wave speed", 1.0, 0.5, 2.0, 0.1));
+
+    public static final Module BRIDGEGUIDE = new Module("bridgeguide", "Bridge Guide", "HUD",
+            "Label under the crosshair while Full Bridge is on", true);
+
+    public static void init() {
+        if (inited) return;
+        inited = true;
+        Modules.ALL.add(NEARBY);
+        Modules.ALL.add(BLOOD);
+        Modules.ALL.add(SWIM);
+        Modules.ALL.add(BRIDGEGUIDE);
+        HudRenderCallback.EVENT.register((ctx, tc) -> {
+            try {
+                render(ctx);
+            } catch (Throwable ex) {
+                Safe.err("ezhud", ex);
+            }
+        });
+    }
+
+    private static void render(DrawContext c) {
         MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.player == null || mc.world == null || mc.options.hudHidden || mc.currentScreen instanceof EzScreen) return;
-        EzConfig k = EzConfig.I;
-        TextRenderer t = mc.textRenderer;
-        int acc = EzConfig.accent();
-        int w = c.getScaledWindowWidth(), h = c.getScaledWindowHeight();
+        if (mc.player == null || mc.world == null || mc.options.hudHidden) return;
+        boolean lite = Modules.AUTO_Q.enabled && mc.getCurrentFps() < Modules.AUTO_Q.get("fps").i();
+        int sw = mc.getWindow().getScaledWidth(), sh = mc.getWindow().getScaledHeight();
 
-        if (!k.lowEnd && k.weather > 0) weather(c, w, h, k);
-        if (!k.lowEnd && k.bloodVisuals) blood(c, w, h);
-        if (k.itemGlow) itemGlow(c, mc, w, h);
-
-        if (k.topBar) {
-            renderWatermark(c, mc, t, acc);
-        }
-
-        int y = h / 2 - 40;
-        if (k.armorHud) y = armor(c, mc, t, y, acc);
-        if (k.totemHelper) y = totems(c, mc, t, y);
-        if (k.cooldownsHud) cooldowns(c, mc, t, y + 6, acc);
-        if (k.potionHud) potions(c, mc, t, w);
-        if (k.nearbyPlayers) nearby(c, mc, t, acc);
-        if (k.lookSlots && EzVisuals.lookSlotsEnabled && mc.crosshairTarget instanceof EntityHitResult hit && hit.getEntity() instanceof PlayerEntity target) {
-            lookSlots(c, mc, t, target, acc);
-        }
-        if (k.fullBridge && EzVisuals.bridgeEnabled) bridgeGuide(c, mc, t, w, h, acc);
-        if (k.swimAnimation && mc.player.isSwimming()) swimIndicator(c, t, w, h, k.swimAmount, acc);
-
-        if (System.currentTimeMillis() < EzVisuals.toastUntil) {
-            int tw = t.getWidth(EzVisuals.toast);
-            c.drawText(t, EzVisuals.toast, (w - tw) / 2, h - 60, 0xFFFF5555, true);
-        }
+        try { if (BLOOD.enabled && !lite) blood(c, mc, sw, sh); } catch (Throwable ex) { Safe.err("blood", ex); }
+        try { if (NEARBY.enabled && !lite) nearby(c, mc, sw); } catch (Throwable ex) { Safe.err("nearby", ex); }
+        try { if (SWIM.enabled) swim(c, mc, sw, sh); } catch (Throwable ex) { Safe.err("swim", ex); }
+        try { if (BRIDGEGUIDE.enabled) bridge(c, mc, sw, sh); } catch (Throwable ex) { Safe.err("bridgeguide", ex); }
     }
 
-    private static void renderWatermark(DrawContext c, MinecraftClient mc, TextRenderer t, int acc) {
-        int ping = getPing(mc);
-        int fps = mc.getCurrentFps();
-
-        String brand = "EzVisuals";
-        String sep = "  /  ";
-        String pingStr = ping + " ms";
-        String fpsStr = fps + " FPS";
-
-        int iconW = 14;
-        int gap = 5;
-        int padX = 7;
-        int padY = 5;
-
-        int textW = t.getWidth(brand) + t.getWidth(sep) * 2 + t.getWidth(pingStr) + t.getWidth(fpsStr);
-        int boxW = padX * 2 + iconW + gap + textW;
-        int boxH = padY * 2 + t.fontHeight;
-
-        int x = 6;
-        int yTop = 6;
-
-        c.fill(x, yTop, x + boxW, yTop + boxH, 0xD80D0D14);
-        c.fill(x, yTop, x + boxW, yTop + 1, 0x25FFFFFF);
-        c.fill(x, yTop + boxH - 1, x + boxW, yTop + boxH, 0x60000000);
-
-        int pulseColor = 0xFF5B5CE6;
-        drawPulseIcon(c, x + padX, yTop + boxH / 2, pulseColor);
-
-        int curX = x + padX + iconW + gap;
-        int textY = yTop + padY + 1;
-
-        c.drawText(t, brand, curX, textY, 0xFFFFFFFF, false);
-        curX += t.getWidth(brand);
-
-        c.drawText(t, sep, curX, textY, 0xFF6E6E7A, false);
-        curX += t.getWidth(sep);
-
-        c.drawText(t, pingStr, curX, textY, 0xFFE5E5EA, false);
-        curX += t.getWidth(pingStr);
-
-        c.drawText(t, sep, curX, textY, 0xFF6E6E7A, false);
-        curX += t.getWidth(sep);
-
-        c.drawText(t, fpsStr, curX, textY, 0xFFE5E5EA, false);
-
-        if (EzConfig.I.pvpSafe && EzVisuals.inCombat()) {
-            long left = 8000 - (System.currentTimeMillis() - EzVisuals.lastCombatMs);
-            c.drawText(t, "PvP Safe: combat " + (left / 1000 + 1) + "s", x, yTop + boxH + 4, 0xFFFF5555, true);
+    // ---------------- blood vision ----------------
+    private static void blood(DrawContext c, MinecraftClient mc, int sw, int sh) {
+        ClientPlayerEntity p = mc.player;
+        float hp = p.getHealth();
+        double low = BLOOD.get("low").d();
+        float k = 0f;
+        boolean lowHp = hp <= low;
+        if (lowHp) k = (float) Math.min(1.0, (low - hp) / low * 0.8 + 0.25);
+        if (BLOOD.get("hurt").b() && p.hurtTime > 0) k = Math.max(k, Math.min(1f, p.hurtTime / 10f * 0.8f));
+        if (k <= 0f) return;
+        if (lowHp) k *= 0.8f + 0.2f * (float) Math.sin(System.currentTimeMillis() / 180.0);
+        float st = BLOOD.get("strength").f();
+        int layers = 12;
+        int th = Math.max(2, Math.min(sw, sh) / 28);
+        for (int i = 0; i < layers; i++) {
+            float f = 1f - i / (float) layers;
+            int a = (int) (170 * st * k * f * f);
+            if (a <= 0) continue;
+            int col = (Math.min(255, a) << 24) | 0xB00000;
+            int o = i * th;
+            c.fill(o, o, sw - o, o + th, col);
+            c.fill(o, sh - o - th, sw - o, sh - o, col);
+            c.fill(o, o + th, o + th, sh - o - th, col);
+            c.fill(sw - o - th, o + th, sw - o, sh - o - th, col);
         }
     }
 
-    private static int getPing(MinecraftClient mc) {
-        if (mc.getNetworkHandler() != null && mc.player != null) {
-            PlayerListEntry entry = mc.getNetworkHandler().getPlayerListEntry(mc.player.getUuid());
-            if (entry != null) return entry.getLatency();
-        }
-        return 0;
-    }
-
-    private static void drawPulseIcon(DrawContext c, int x, int midY, int col) {
-        int glow = (col & 0x00FFFFFF) | 0x40000000;
-        c.fill(x, midY - 1, x + 14, midY + 2, glow);
-        c.fill(x, midY, x + 3, midY + 1, col);
-        c.fill(x + 3, midY - 2, x + 4, midY, col);
-        c.fill(x + 4, midY - 4, x + 5, midY - 2, col);
-        c.fill(x + 5, midY - 3, x + 6, midY + 1, col);
-        c.fill(x + 6, midY + 1, x + 7, midY + 4, col);
-        c.fill(x + 7, midY + 1, x + 8, midY + 3, col);
-        c.fill(x + 8, midY - 1, x + 9, midY + 1, col);
-        c.fill(x + 9, midY, x + 14, midY + 1, col);
-    }
-
-    static int armorPercent(PlayerEntity p) {
-        int tot = 0, max = 0;
-        for (EquipmentSlot s : ARMOR) {
-            ItemStack st = p.getEquippedStack(s);
-            if (!st.isEmpty() && st.isDamageable()) {
-                tot += st.getMaxDamage() - st.getDamage();
-                max += st.getMaxDamage();
-            }
-        }
-        return max == 0 ? 0 : tot * 100 / max;
-    }
-
-    private static int pctColor(int pc) {
-        return pc > 60 ? 0xFF55FF55 : pc > 30 ? 0xFFFFC83D : 0xFFFF5555;
-    }
-
-    private static int armor(DrawContext c, MinecraftClient mc, TextRenderer t, int y, int acc) {
-        c.fill(4, y - 4, 70, y + 4 * 18 + 14, 0x90101018);
-        c.fill(4, y - 4, 6, y + 4 * 18 + 14, acc);
-        for (EquipmentSlot s : ARMOR) {
-            ItemStack st = mc.player.getEquippedStack(s);
-            if (!st.isEmpty()) {
-                c.drawItem(st, 10, y);
-                if (st.isDamageable()) {
-                    int pc = (st.getMaxDamage() - st.getDamage()) * 100 / st.getMaxDamage();
-                    c.drawText(t, pc + "%", 30, y + 4, pctColor(pc), true);
-                }
-            }
-            y += 18;
-        }
-        c.drawText(t, "Armor " + armorPercent(mc.player) + "%", 10, y + 2, acc, true);
-        return y + 18;
-    }
-
-    private static int totems(DrawContext c, MinecraftClient mc, TextRenderer t, int y) {
-        PlayerInventory inv = mc.player.getInventory();
-        int n = 0;
-        for (int i = 0; i < inv.size(); i++) {
-            if (inv.getStack(i).isOf(Items.TOTEM_OF_UNDYING)) n += 1;
-        }
-        boolean off = mc.player.getOffHandStack().isOf(Items.TOTEM_OF_UNDYING);
-        c.drawText(t, "Totems: " + n, 8, y, n > 0 ? 0xFFFFFFFF : 0xFFFF5555, true);
-        if (n > 0 && !off) c.drawText(t, "Offhand: no totem!", 8, y + 10, 0xFFFF5555, true);
-        return y + 24;
-    }
-
-    private static void cooldowns(DrawContext c, MinecraftClient mc, TextRenderer t, int y, int acc) {
-        PlayerInventory inv = mc.player.getInventory();
-        Set<Item> seen = new HashSet<>();
-        for (int i = 0; i < inv.size(); i++) {
-            ItemStack s = inv.getStack(i);
-            if (s.isEmpty() || !seen.add(s.getItem())) continue;
-            float p = mc.player.getItemCooldownManager().getCooldownProgress(s, 0f);
-            if (p <= 0f) continue;
-            c.drawItem(s, 6, y);
-            c.fill(26, y + 6, 66, y + 10, 0xFF2A2A35);
-            c.fill(26, y + 6, 26 + (int) (p * 40), y + 10, acc);
-            c.drawText(t, (int) (p * 100) + "%", 70, y + 4, 0xFFDDDDDD, true);
-            y += 18;
-        }
-    }
-
-    private static void potions(DrawContext c, MinecraftClient mc, TextRenderer t, int w) {
-        int y = 40;
-        for (StatusEffectInstance e : mc.player.getStatusEffects()) {
-            String name = e.getEffectType().value().getName().getString();
-            boolean beneficial = e.getEffectType().value().isBeneficial();
-            if (EzConfig.I.potionBeneficialOnly && !beneficial) continue;
-            String time;
-            if (e.isInfinite()) time = "INF";
-            else {
-                int seconds = Math.max(0, e.getDuration() / 20);
-                time = EzConfig.I.potionTimeFormat == 1 ? seconds + "s" : String.format(Locale.US, "%d:%02d", seconds / 60, seconds % 60);
-            }
-            String line = name + (e.getAmplifier() > 0 ? " " + (e.getAmplifier() + 1) : "") + "  " + time;
-            int tw = t.getWidth(line);
-            if (EzConfig.I.potionBackground) c.fill(w - tw - 14, y - 2, w - 4, y + 11, 0x90101018);
-            c.drawText(t, line, w - tw - 8, y + 1, beneficial ? 0xFF75F59A : 0xFFFF657A, true);
-            y += 15;
-        }
-    }
-
-    private static void nearby(DrawContext c, MinecraftClient mc, TextRenderer t, int acc) {
+    // ---------------- nearby players ----------------
+    private static void nearby(DrawContext c, MinecraftClient mc, int sw) {
+        double maxD = NEARBY.get("dist").d();
+        int max = NEARBY.get("max").i();
+        boolean hpOn = NEARBY.get("hp").b(), armOn = NEARBY.get("armor").b();
         List<PlayerEntity> list = new ArrayList<>();
-        for (PlayerEntity p : mc.world.getPlayers()) {
-            if (p != mc.player && p.distanceTo(mc.player) < 64) list.add(p);
+        for (PlayerEntity pl : mc.world.getPlayers()) {
+            if (pl == mc.player || pl.isSpectator()) continue;
+            if (pl.distanceTo(mc.player) <= maxD) list.add(pl);
         }
-        list.sort(Comparator.comparingDouble(p -> p.distanceTo(mc.player)));
-        int y = 40;
-        for (int i = 0; i < Math.min(5, list.size()); i++) {
-            PlayerEntity p = list.get(i);
-            String s = p.getName().getString() + "  " + (int) Math.ceil(p.getHealth()) + "HP  " + (EzConfig.I.armorNameTags ? armorPercent(p) + "% armor  " : "") + (int) p.distanceTo(mc.player) + "m";
-            c.fill(6, y - 2, 6 + t.getWidth(s) + 8, y + 10, 0x90101018);
-            c.drawText(t, s, 10, y, acc, true);
-            y += 14;
+        if (list.isEmpty()) return;
+        list.sort(Comparator.comparingDouble(o -> o.distanceTo(mc.player)));
+        int n = Math.min(max, list.size());
+
+        String[] names = new String[n], info = new String[n];
+        int[] cols = new int[n];
+        int w = 90;
+        for (int i = 0; i < n; i++) {
+            PlayerEntity pl = list.get(i);
+            names[i] = pl.getName().getString();
+            float hv = pl.getHealth() + pl.getAbsorptionAmount();
+            int ap = U.armorPct(pl);
+            StringBuilder sb = new StringBuilder();
+            if (hpOn) sb.append(String.format(Locale.ROOT, "%.1f", hv)).append("  ");
+            if (armOn && ap >= 0) sb.append(ap).append("%  ");
+            sb.append((int) pl.distanceTo(mc.player)).append("m");
+            info[i] = sb.toString();
+            cols[i] = hpOn ? (hv > 14 ? 0xFF5CFF7A : hv > 7 ? 0xFFFFD34D : 0xFFFF5555) : Draw.SUB;
+            w = Math.max(w, Draw.w(names[i]) + Draw.w(info[i]) + 28);
+        }
+        Theme t = Theme.cur();
+        int h = 16 + n * 12 + 2;
+        int x = sw - w - 6, y = 6;
+        Draw.rrect(c, x, y, w, h, 4, 0xD00E0E14);
+        Draw.hgrad(c, x + 3, y, w - 6, 1, t.accent, t.accent2);
+        Draw.shadow(c, "Nearby", x + 7, y + 4, 0xFFFFFFFF);
+        Draw.textR(c, String.valueOf(list.size()), x + w - 7, y + 4, Draw.SUB);
+        for (int i = 0; i < n; i++) {
+            int ry = y + 16 + i * 12;
+            Draw.text(c, names[i], x + 7, ry, 0xFFE6E6F0);
+            Draw.textR(c, info[i], x + w - 7, ry, cols[i]);
         }
     }
 
-    private static void itemGlow(DrawContext c, MinecraftClient mc, int w, int h) {
-        for (int i = 0; i < 9; i++) {
-            ItemStack s = mc.player.getInventory().getStack(i);
-            int col;
-            if (s.isIn(ItemTags.SWORDS)) col = 0xFF4040;
-            else if (s.isIn(ItemTags.PICKAXES)) col = 0x40E0FF;
+    // ---------------- swim indicator ----------------
+    private static void swim(DrawContext c, MinecraftClient mc, int sw, int sh) {
+        ClientPlayerEntity p = mc.player;
+        if (!p.isSwimming()) return;
+        Theme t = Theme.cur();
+        float amt = SWIM.get("amount").f();
+        Vec3d v = p.getVelocity();
+        double sp = Math.sqrt(v.x * v.x + v.z * v.z) * 20.0;
+        String s = String.format(Locale.ROOT, "SWIM  %.1f b/s", sp);
+        int w = Math.max(96, Draw.w(s) + 16), h = 26;
+        int x = sw / 2 - w / 2, y = sh / 2 + 40;
+        Draw.rrect(c, x, y, w, h, 4, 0xD00E0E14);
+        Draw.hgrad(c, x + 3, y, w - 6, 1, t.accent, t.accent2);
+        Draw.textC(c, s, sw / 2, y + 4, t.accent);
+        double tm = System.currentTimeMillis() / 1000.0 * 3.0 * amt;
+        int n = (w - 16) / 2;
+        for (int i = 0; i < n; i++) {
+            int yy = y + 17 + (int) Math.round(Math.sin(tm + i * 0.45) * 3);
+            c.fill(x + 8 + i * 2, yy, x + 10 + i * 2, yy + 2, Draw.alpha(t.accent, 0xC0));
+        }
+    }
+
+    // ---------------- bridge guide ----------------
+    private static void bridge(DrawContext c, MinecraftClient mc, int sw, int sh) {
+        if (!Modules.BRIDGE.enabled) return;
+        boolean blocks = mc.player.getMainHandStack().getItem() instanceof BlockItem;
+        String s = blocks ? "BRIDGE ON" : "BRIDGE: hold blocks";
+        Draw.textC(c, s, sw / 2, sh / 2 + 14, blocks ? Theme.cur().accent : 0xFFFF5555);
+    }
+}
